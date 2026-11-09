@@ -10,10 +10,8 @@ Put this directory where Grok loads user skills, so `SKILL.md` is at `~/.grok/sk
 
 ```bash
 mkdir -p ~/.grok/skills
-git clone https://github.com/<owner>/omarchy-dual-boot.git ~/.grok/skills/omarchy-dual-boot
+git clone https://github.com/andrzejsliwa/omarchy-dual-boot.git ~/.grok/skills/omarchy-dual-boot
 ```
-
-Replace `<owner>` with the GitHub account that holds this repository.
 
 A copy or a symlink of this directory to that path works the same way. Grok picks up a new skill when the files land on disk. Open a new session if `/omarchy-dual-boot` is not in the slash menu yet.
 
