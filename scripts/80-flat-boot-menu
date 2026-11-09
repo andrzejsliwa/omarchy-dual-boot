@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Keep the Limine menu to two bootable entries: Omarchy and Windows 11.
+
+limine-entry-tool and limine-snapper-sync rewrite /boot/limine.conf as a tree
+(Omarchy / linux-omarchy / Snapshots, plus the EFI fallback). This hook runs
+after those tools and before limine-enroll-config, and writes the flat menu
+back. Snapshot files on disk are left alone.
+
+Windows is the entry titled with "Windows" or the one whose path contains
+bootmgfw.efi. A BLAKE2 suffix on that path is removed: firmware checks the
+Microsoft signature, and a hash here breaks the chainload after a Windows update.
+"""
+
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+CONF = Path(os.environ.get("LIMINE_CONFIG_PATH", "/boot/limine.conf"))
+ENTRY_RE = re.compile(r"^(?P<slashes>/+)(?P<plus>\+?)(?P<title>.*)$")
+
+
+def parse(text):
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if ENTRY_RE.match(line):
+            start = i
+            break
+    if start is None:
+        return None
+    header = lines[:start]
+    entries = []
+    current = None
+    for line in lines[start:]:
+        match = ENTRY_RE.match(line)
+        if match:
+            current = {
+                "depth": len(match.group("slashes")),
+                "title": match.group("title"),
+                "lines": [],
+            }
+            entries.append(current)
+        elif current is not None:
+            current["lines"].append(line)
+    return header, entries
+
+
+def build_tree(entries):
+    roots = []
+    stack = []
+    for entry in entries:
+        node = {**entry, "children": []}
+        while stack and stack[-1][0] >= node["depth"]:
+            stack.pop()
+        if stack:
+            stack[-1][1]["children"].append(node)
+        else:
+            roots.append(node)
+        stack.append((node["depth"], node))
+    return roots
+
+
+def comment_line(entry, needle):
+    needle = needle.lower()
+    for line in entry["lines"]:
+        stripped = line.strip()
+        if stripped.lower().startswith("comment:") and needle in stripped.lower():
+            return stripped
+    return None
+
+
+def option_line(entry, key):
+    prefix = key.lower() + ":"
+    for line in entry["lines"]:
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix):
+            return stripped
+    return None
+
+
+def has_boot(entry):
+    return option_line(entry, "protocol") and option_line(entry, "path")
+
+
+def find_kernel(os_node):
+    found = []
+
+    def walk(node, under_snapshots):
+        under_snapshots = under_snapshots or node["title"] == "Snapshots"
+        if node is not os_node and not under_snapshots and has_boot(node):
+            found.append(node)
+        for child in node["children"]:
+            walk(child, under_snapshots)
+
+    walk(os_node, False)
+    for kernel in found:
+        title = kernel["title"].lower()
+        kernel_id = (comment_line(kernel, "kernel-id=") or "").lower()
+        if "fallback" in title or "fallback" in kernel_id:
+            continue
+        if title == "linux-omarchy" or kernel_id.startswith("comment: kernel-id=linux-omarchy"):
+            return kernel
+    for kernel in found:
+        if "fallback" not in kernel["title"].lower():
+            return kernel
+    if has_boot(os_node):
+        return os_node
+    return None
+
+
+def is_windows(node):
+    if "windows" in node["title"].lower():
+        return True
+    return "bootmgfw.efi" in "\n".join(node["lines"]).lower()
+
+
+def find_windows(roots):
+    found = []
+
+    def walk(nodes):
+        for node in nodes:
+            if is_windows(node):
+                found.append(node)
+            walk(node["children"])
+
+    walk(roots)
+    for node in found:
+        if "bootmgfw.efi" in "\n".join(node["lines"]).lower():
+            return node
+    return found[0] if found else None
+
+
+def chainload_line(line):
+    body = line.strip()
+    if not body.lower().startswith("path:") or "#" not in body:
+        return line
+    indent = line[: len(line) - len(line.lstrip(" "))]
+    value = body.split(":", 1)[1].split("#", 1)[0].strip()
+    return f"{indent}path: {value}"
+
+
+def render(header, omarchy, kernel, windows):
+    new_header = []
+    replaced = False
+    for line in header:
+        if line.startswith("default_entry:"):
+            new_header.append("default_entry: Omarchy")
+            replaced = True
+        else:
+            new_header.append(line)
+    if not replaced:
+        new_header.append("default_entry: Omarchy")
+
+    machine = comment_line(omarchy, "machine-id=")
+    kernel_id = comment_line(kernel, "kernel-id=") or "comment: kernel-id=linux-omarchy"
+    protocol = option_line(kernel, "protocol")
+    path = option_line(kernel, "path")
+    cmdline = option_line(kernel, "cmdline")
+
+    win_lines = [chainload_line(line) for line in windows["lines"]]
+    while win_lines and win_lines[-1].strip() == "":
+        win_lines.pop()
+
+    out = list(new_header)
+    if out and out[-1] != "":
+        out.append("")
+    out.append("/Omarchy")
+    out.append("### This OS entry is auto-generated by limine-entry-tool")
+    out.append("comment: Omarchy")
+    if machine:
+        out.append(machine)
+    out.append(kernel_id)
+    out.append(protocol)
+    out.append(path)
+    if cmdline:
+        out.append(cmdline)
+    out.append("")
+    out.append("/Windows 11")
+    out.extend(win_lines)
+    out.append("")
+    text = "\n".join(out)
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def write_atomic(path, text):
+    directory = path.parent
+    fd, tmpname = tempfile.mkstemp(prefix=".limine.conf.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmpname, 0o644)
+        os.replace(tmpname, path)
+    except Exception:
+        try:
+            os.unlink(tmpname)
+        except OSError:
+            pass
+        raise
+    os.sync()
+
+
+def main():
+    if not CONF.is_file():
+        print(f"flat-boot-menu: {CONF} is missing, leaving the menu unchanged", file=sys.stderr)
+        return 0
+    raw = CONF.read_text(encoding="utf-8")
+    parsed = parse(raw)
+    if parsed is None:
+        print("flat-boot-menu: no menu entries, leaving the menu unchanged", file=sys.stderr)
+        return 0
+    header, entries = parsed
+    roots = build_tree(entries)
+    omarchy = next((node for node in roots if node["title"] == "Omarchy"), None)
+    windows = find_windows(roots)
+    if omarchy is None or windows is None:
+        print("flat-boot-menu: Omarchy or Windows is missing, leaving the menu unchanged", file=sys.stderr)
+        return 0
+    kernel = find_kernel(omarchy)
+    if kernel is None or not option_line(kernel, "path"):
+        print("flat-boot-menu: Omarchy has no bootable kernel, leaving the menu unchanged", file=sys.stderr)
+        return 0
+    text = render(header, omarchy, kernel, windows)
+    if text == raw:
+        return 0
+    write_atomic(CONF, text)
+    print("flat-boot-menu: menu is Omarchy and Windows 11")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"flat-boot-menu: {exc}; leaving the menu unchanged", file=sys.stderr)
+        sys.exit(0)
