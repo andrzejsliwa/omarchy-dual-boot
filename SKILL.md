@@ -31,7 +31,7 @@ Show what the disks contain before changing anything. Write privileged files wit
 
 ## Read first
 
-Before any change: `lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTUUID,MOUNTPOINT`, `findmnt /boot`, `sbctl status`, `efibootmgr`, `/etc/default/limine`, and `$ESP/limine.conf`. The ESP is the vfat filesystem that contains `EFI/limine`, usually mounted at `/boot`. Windows EFI is the other vfat partition that contains `EFI/Microsoft/Boot/bootmgfw.efi`.
+Before any change: `lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTUUID,MOUNTPOINT`, `findmnt /boot`, `sbctl status --json`, `efibootmgr`, `/etc/default/limine`, and `$ESP/limine.conf`. The ESP is the vfat filesystem that contains `EFI/limine`, usually mounted at `/boot`. Windows EFI is the other vfat partition that contains `EFI/Microsoft/Boot/bootmgfw.efi`.
 
 If there is no Windows EFI partition, stop and say so. Do not guess the path.
 
@@ -80,17 +80,49 @@ If Windows is missing after `limine-update`, mount the Windows EFI partition rea
 
 ## Secure Boot
 
-Do this only when the user wants Secure Boot on.
+Do this only when the user wants Secure Boot on. Read `sbctl status --json` before every key command, and again after any reboot. Four fields decide the next step: `installed` (sbctl already has keys on disk), `setup_mode`, `secure_boot`, and `vendors`.
 
-1. `pacman -S --needed sbctl`
-2. `sbctl create-keys` only when no keys exist.
-3. `sbctl sign -s` the Omarchy UKI (`$ESP/EFI/Linux/*.efi`) and `$ESP/EFI/BOOT/BOOTX64.EFI` when that file exists. Enrollment signs the Limine binary during `limine-update`. After signing, run `limine-update` once more.
-4. Reboot to firmware and enter Setup Mode. Do not clear the keys when enrollment already succeeded and only the menu needs a fix.
-5. In Setup Mode: `sbctl enroll-keys --microsoft`.
-6. The user turns Secure Boot on in firmware and reboots.
-7. `sbctl verify` must pass for `limine_x64.efi`, the Omarchy UKI, and `BOOTX64.EFI` when it exists. `sbctl status` must show Vendor Keys `microsoft` and Secure Boot enabled.
+Install sbctl with `pacman -S --needed sbctl` when the command is missing, then read the status again.
 
-When Secure Boot is already enabled and Setup Mode is disabled: do not run `create-keys` or `enroll-keys`. Sign files with the existing keys and rebuild the menu. If sbctl has no keys and the firmware has someone else's, stop.
+Sign the boot files with `sbctl sign -s` on the Omarchy UKI (`$ESP/EFI/Linux/*.efi`) and on `$ESP/EFI/BOOT/BOOTX64.EFI` when that file exists, then run `limine-update`. That signs the Limine binary. Done means `sbctl verify` passes for `limine_x64.efi`, the Omarchy UKI, and `BOOTX64.EFI` when it exists, `setup_mode` is false, `secure_boot` is true, and `vendors` includes `microsoft`.
+
+### Setup Mode is on
+
+`setup_mode` is true. Enroll on this boot. Do not reboot before `enroll-keys`.
+
+1. `sbctl create-keys` only when `installed` is false.
+2. Sign the boot files and run `limine-update`.
+3. `sbctl enroll-keys --microsoft`.
+4. Stop. Tell the user to enable Secure Boot in firmware and reboot. Do not clear the keys.
+5. After that reboot, `setup_mode` must be false and `secure_boot` true. Then run `sbctl verify`.
+
+### Setup Mode is off and Secure Boot is on
+
+Enrollment is already in effect. Do not run `create-keys` or `enroll-keys`, and do not ask the user to reset firmware keys.
+
+If `installed` is false, stop. Firmware is enforcing keys that sbctl does not have.
+
+If `installed` is true, sign the boot files, run `limine-update`, and run `sbctl verify`.
+
+### Setup Mode is off and Secure Boot is off
+
+Do not run `enroll-keys`. Outside Setup Mode, sbctl refuses it: "Your system is not in Setup Mode".
+
+If `installed` is false, `sbctl create-keys`, then sign the boot files and run `limine-update`.
+
+Check the firmware Platform Key without printing certificate bytes. This prints only the subject. Do not write `Raw` into the chat, a commit, or a file in this repository.
+
+```bash
+sbctl list-enrolled-keys --json | python3 -c '
+import json, sys, base64, subprocess
+for entry in json.load(sys.stdin).get("PK", []):
+    der = base64.b64decode(entry["Raw"])
+    subprocess.run(["openssl", "x509", "-inform", "DER", "-noout", "-subject"], input=der)
+'
+```
+
+- If a PK subject is `CN=Platform Key`, sbctl's key is already enrolled and Secure Boot is only switched off. Tell the user to enable Secure Boot in firmware and reboot. Do not reset keys and do not enroll again. After the reboot, require `setup_mode` false, `secure_boot` true, and a passing `sbctl verify`.
+- Otherwise the local keys are not enrolled. Tell the user to reboot into firmware, reset the Secure Boot keys so the next boot is in Setup Mode, and run the skill again. On that run `setup_mode` must be true before `enroll-keys`.
 
 Before the first Windows boot, say that BitLocker may ask for the recovery key from the Microsoft account.
 

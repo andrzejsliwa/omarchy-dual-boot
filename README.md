@@ -27,4 +27,4 @@ In Grok:
 
 `/skills` lists it too. Grok also loads the skill when you ask for dual boot, a Limine timeout, or this boot menu on a new Omarchy.
 
-The agent writes boot files with `pkexec` or `sudo`. Secure Boot enrollment needs a reboot into firmware Setup Mode. Read `SKILL.md` before you let it change the boot menu.
+The agent writes boot files with `pkexec` or `sudo`. It enrolls Secure Boot keys only while `sbctl status` reports Setup Mode, and it stops for a firmware change when it does not. Read `SKILL.md` before you let it change the boot menu.
