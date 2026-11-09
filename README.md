@@ -32,5 +32,5 @@ The agent writes boot files with `pkexec` or `sudo`. It enrolls Secure Boot keys
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+make test
 ```
