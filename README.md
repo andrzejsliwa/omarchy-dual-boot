@@ -36,3 +36,7 @@ The agent writes boot files with `pkexec` or `sudo`. It enrolls Secure Boot keys
 ```bash
 make test
 ```
+
+## License
+
+[MIT](LICENSE)
