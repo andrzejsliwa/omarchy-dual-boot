@@ -1,5 +1,7 @@
 # omarchy-dual-boot
 
+[![tests](https://github.com/andrzejsliwa/omarchy-dual-boot/actions/workflows/tests.yml/badge.svg)](https://github.com/andrzejsliwa/omarchy-dual-boot/actions/workflows/tests.yml)
+
 Grok skill for a fresh Omarchy install that dual-boots Windows. It sets the Limine menu so Omarchy boots by default after 5 seconds, leaves Windows 11 as the other entry, keeps snapshot UKIs off the ESP, and enrolls Secure Boot with sbctl plus the Microsoft keys.
 
 `SKILL.md` is the procedure the agent follows. `scripts/80-flat-boot-menu` is the Limine hook the agent installs. Everything in this repository is English, including the messages that hook prints.
